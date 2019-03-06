@@ -1,5 +1,5 @@
 #!/bin/bash
 apt-get update
-apt-get install esl-erlang
-apt-get install erlang-jiffy
+apt-get --assume-yes install esl-erlang
+apt-get --assume-yes install erlang-jiffy
 

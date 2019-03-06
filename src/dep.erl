@@ -93,7 +93,7 @@ function_name([{<<"+">>, Package}|Packages_to_change], State, Repo, Graph, Size,
             end
     end;
 function_name([{<<"-">>, Package}|Packages_to_change], State, Repo, Graph, Size, Instruction_list) ->
-    % io:fwrite("\n Instruction list: ~p, \n State: ~p", [Instruction_list, State]),
+    % io:fwrite("\n Instruction list: ~p, \n State: ~p, \n Current instruction: ~p", [Instruction_list, State, {<<"-">>, Package}]),
     case is_package_installed(State, Package) of
         true ->
             case get_required_operations({<<"-">>, Package}, State, Repo) of    
@@ -229,9 +229,20 @@ get_required_operations({Operation, Package}, State, Repo) ->
             % io:fwrite("\n Dependency list: ~p", [Dl]),            
             convert_package_ref_to_json(Dl, Repo) ++ Cl;
         <<"-">> ->
-            Dependents = get_dependent_packages(State, Package),
+            Dependents = get_dep_packages(State, Package),
             lists:map(fun(Elem) -> {<<"-">>, Elem} end, Dependents)
     end.
+
+get_dep_packages(State, Package) ->
+    State2 = uninstall(State, Package),
+    lists:filtermap(fun(E) -> 
+        case get_missing_deps(State2, E) of 
+            [] ->
+                false;
+            _ ->
+                true
+        end 
+    end, State2).
 
 get_missing_deps(State, Package) ->
     case maps:get(<<"depends">>, Package, none) of 
@@ -451,49 +462,50 @@ get_self_conflicts(_, _) ->
     [].
 
 % Returns all packages in current state that have a dependecny on the passed package (Used to check if package can be uninstalled)
-get_dependent_packages(State, #{<<"version">> := Version, <<"name">> := Name}) ->
-    lists:filtermap(fun(Elem) -> 
-        case maps:get(<<"depends">>, Elem, none) of
-            none -> false;
-            {error, _} -> false;
-            Value -> check_dependencies({Name, Version}, Value) 
-        end
-    end, State).
+% get_dependent_packages(State, #{<<"version">> := Version, <<"name">> := Name}) ->
+%     lists:filtermap(fun(Elem) -> 
+%         case maps:get(<<"depends">>, Elem, none) of
+%             none -> false;
+%             {error, _} -> false;
+%             Value -> check_dependencies({Name, Version}, Value) 
+%         end
+%     end, State).
 
-check_dependencies(_, []) ->
-    false;
-check_dependencies({Name, Version}, [Dependency|Xs]) ->
-    case binary:split(Dependency, [<<">=">>]) of
-        [Name, Y] -> 
-            Version >= Y;
-        _ -> 
-            case binary:split(Dependency, [<<"<=">>]) of
-                [Name, Y] ->
-                    Version =< Y;
-                _ ->
-                    case binary:split(Dependency, <<"=">>) of
-                        [Name, Version] -> 
-                            true;
-                        _ ->
-                            case binary:split(Dependency, <<">">>) of
-                                [Name, Y] -> 
-                                    Version > Y;
-                                _ ->
-                                    case binary:split(Dependency, <<"<">>) of
-                                        [Name, Y] ->
-                                            Version < Y;
-                                        _ ->
-                                            case Dependency of 
-                                                Name ->
-                                                    false;
-                                                _ ->
-                                                    check_dependencies({Name, Version}, Xs)
-                                            end
-                                    end        
-                            end
-                    end
-            end
-    end.
+% check_dependencies(_, []) ->
+%     false;
+% check_dependencies({Name, Version}, [Dependency|Xs]) ->
+%     io:fwrite("\nName,ver : ~p, Dep: ~p", [{Name, Version}, Dependency]),
+%     case binary:split(Dependency, [<<">=">>]) of
+%         [Name, Y] -> 
+%             Version >= Y;
+%         _ -> 
+%             case binary:split(Dependency, [<<"<=">>]) of
+%                 [Name, Y] ->
+%                     Version =< Y;
+%                 _ ->
+%                     case binary:split(Dependency, <<"=">>) of
+%                         [Name, Version] -> 
+%                             true;
+%                         _ ->
+%                             case binary:split(Dependency, <<">">>) of
+%                                 [Name, Y] -> 
+%                                     Version > Y;
+%                                 _ ->
+%                                     case binary:split(Dependency, <<"<">>) of
+%                                         [Name, Y] ->
+%                                             Version < Y;
+%                                         _ ->
+%                                             case Dependency of 
+%                                                 Name ->
+%                                                     false;
+%                                                 _ ->
+%                                                     check_dependencies({Name, Version}, Xs)
+%                                             end
+%                                     end        
+%                             end
+%                     end
+%             end
+%     end.
 
 check_conflict_list(_, []) ->
     false;

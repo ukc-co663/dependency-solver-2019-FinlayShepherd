@@ -1,2 +1,1 @@
-# depsolver-StartJava
-Scaffolding for Java projects
+# depsolver - Erlang

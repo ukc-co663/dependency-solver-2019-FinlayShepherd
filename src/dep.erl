@@ -16,30 +16,24 @@ main(Args) ->
     % io:fwrite("Interpreted constraints: ~p", [Consts]),
     State = convert_state_to_json(S, Repo),
     % io:fwrite("Current JSON state: ~p", [State]),
-    Graph = digraph:new(),
+    Proplist = [],
     case are_there_multiple_paths(Consts) of
         true ->
             Paths = get_all_combinations_of_nested_lists(Consts),
-            {_, _, Instruction_list} = compare_paths(Paths, [], State, Repo, Graph, 0, [], none);
+            {_, _, Instruction_list} = compare_paths(Paths, [], State, Repo, Proplist, 0, [], none);
         false ->
-            {_, _, Instruction_list} = satisfy_constraints(Consts, Repo, State, Graph)
+            {_, _, Instruction_list} = function_name(Consts, Repo, State, Proplist, 0 , [])
     end,
     Output = lists:map(fun(E) -> binary_to_list(E) end, Instruction_list),
     io:fwrite("~p", [Output]).
-    % io:fwrite("\n Result : ~p, \n Size: ~p", [Instruction_list, Size]).
 
-satisfy_constraints(Constraints, Repo, State, Graph) ->
-    Result = function_name(Constraints, State, Repo, Graph, 0, []),
-    Result.
-
-function_name([], State, _, Graph, Size, Instruction_list) ->
-    digraph:delete(Graph),
+function_name([], State, _, _, Size, Instruction_list) ->
     {State, Size, Instruction_list};
-function_name([{<<"+">>, Package}|Packages_to_change], State, Repo, Graph, Size, Instruction_list) ->
+function_name([{<<"+">>, Package}|Packages_to_change], State, Repo, Relation_list, Size, Instruction_list) ->
     % io:fwrite("\n Instruction list: ~p, \n State: ~p, \n Current instruction: ~p", [Instruction_list, State, {<<"+">>, Package}]),
     case is_package_installed(State, Package) of
         true ->
-            function_name(Packages_to_change, State, Repo, Graph, Size, Instruction_list);
+            function_name(Packages_to_change, State, Repo, Relation_list, Size, Instruction_list);
         false ->
             case get_required_operations({<<"+">>, Package}, State, Repo) of    
                 [] ->
@@ -48,51 +42,82 @@ function_name([{<<"+">>, Package}|Packages_to_change], State, Repo, Graph, Size,
                     Package_size = maps:get(<<"size">>, Package),
                     Package_version = maps:get(<<"version">>, Package),
                     Instruction = <<"+", Package_name/binary, "=", Package_version/binary>>,
-                    Vertex = digraph:add_vertex(Graph, Instruction),
                     case Instruction_list of 
                         [] ->
                             function_name(
                                 Packages_to_change, 
                                 install(State, Package), 
                                 Repo, 
-                                Graph,
+                                Relation_list,
                                 Size+Package_size, 
                                 Instruction_list ++ [Instruction]
                             );
                         _ ->
-                            Last_instruction = lists:last(Instruction_list),                       
-                            brutally_add_edge_to_digraph(Graph, Last_instruction, Vertex),
-                            % io:fwrite("Adding edge between: ~p, ~p", [Last_instruction, Vertex]),
-                            % io:fwrite("\n Edges: ~p", [digraph:edges(Graph)]),
-                            case digraph:get_cycle(Graph, Vertex) of
-                                false ->
+                            Last_instruction = lists:last(Instruction_list),     
+                            case proplists:append_values(Last_instruction, Relation_list) of
+                                [] ->
                                     function_name(
-                                        Packages_to_change, 
-                                        install(State, Package), 
-                                        Repo, 
-                                        Graph,
-                                        Size+Package_size, 
+                                        Packages_to_change,
+                                        install(State, Package),
+                                        Repo,
+                                        Relation_list ++ [{Last_instruction, Instruction}],
+                                        Size+Package_size,
                                         Instruction_list ++ [Instruction]
                                     );
-                                _ ->
-                                    digraph:delete(Graph),
-                                    {error, cycle_found}
+                                Values ->
+                                    case lists:member(Instruction, Values) of
+                                        true ->
+                                            {error, cycle_found};
+                                        _ ->
+                                            function_name(
+                                                Packages_to_change,
+                                                install(State, Package),
+                                                Repo,
+                                                Relation_list ++ [{Last_instruction, Instruction}],
+                                                Size+Package_size,
+                                                Instruction_list ++ [Instruction]
+                                            )
+                                    end
                             end
                     end;
                 Required_operations ->
-                    % io:fwrite("\n New operations: ~p", [Required_operations]),
-                    case are_there_multiple_paths(Required_operations) of 
-                        true ->
-                            Paths = get_all_combinations_of_nested_lists(Required_operations),
-                            % io:fwrite("\n Possible paths: ~p", [Paths]),
-                            compare_paths(Paths, [{<<"+">>, Package}|Packages_to_change], State, Repo, Graph, Size, Instruction_list, none);
-                        false ->
-                            New_operations = Required_operations ++ [{<<"+">>, Package}|Packages_to_change],
-                            function_name(New_operations, State, Repo, Graph, Size, Instruction_list)
+                    Package_name = maps:get(<<"name">>, Package),
+                    Package_version = maps:get(<<"version">>, Package),
+                    Instruction = <<"+", Package_name/binary, "=", Package_version/binary>>,
+                    % io:fwrite("\n Relation_list: ~p", [Relation_list]),
+                    % io:fwrite("\n Instruction: ~p, \n Required operations: ~p, list to compare to: ~p", [Instruction, Required_operations, proplists:append_values(Instruction, Relation_list)]),
+                    case proplists:append_values(Instruction, Relation_list) of
+                        [] ->
+                            % io:fwrite("\n New operations: ~p", [Required_operations]),
+                            case are_there_multiple_paths(Required_operations) of 
+                                true ->
+                                    Paths = get_all_combinations_of_nested_lists(Required_operations),
+                                    % io:fwrite("\n Possible paths: ~p", [Paths]),
+                                    compare_paths(Paths, [{<<"+">>, Package}|Packages_to_change], State, Repo, Relation_list ++ [{Instruction, [Required_operations]}], Size, Instruction_list, none);
+                                false ->
+                                    New_operations = Required_operations ++ [{<<"+">>, Package}|Packages_to_change],
+                                    function_name(New_operations, State, Repo, Relation_list ++ [{Instruction, [Required_operations]}], Size, Instruction_list)
+                            end;
+                        Values ->
+                            case lists:member(Required_operations, Values) of
+                                true ->
+                                    {error, cycle_found};
+                                _ ->
+                                    % io:fwrite("\n New operations: ~p", [Required_operations]),
+                                    case are_there_multiple_paths(Required_operations) of 
+                                        true ->
+                                            Paths = get_all_combinations_of_nested_lists(Required_operations),
+                                            % io:fwrite("\n Possible paths: ~p", [Paths]),
+                                            compare_paths(Paths, [{<<"+">>, Package}|Packages_to_change], State, Repo, Relation_list ++ [{Instruction, [Required_operations]}], Size, Instruction_list, none);
+                                        false ->
+                                            New_operations = Required_operations ++ [{<<"+">>, Package}|Packages_to_change],
+                                            function_name(New_operations, State, Repo, Relation_list ++ [{Instruction, [Required_operations]}], Size, Instruction_list)
+                                    end
+                            end
                     end
             end
     end;
-function_name([{<<"-">>, Package}|Packages_to_change], State, Repo, Graph, Size, Instruction_list) ->
+function_name([{<<"-">>, Package}|Packages_to_change], State, Repo, Relation_list, Size, Instruction_list) ->
     % io:fwrite("\n Instruction list: ~p, \n State: ~p, \n Current instruction: ~p", [Instruction_list, State, {<<"-">>, Package}]),
     case is_package_installed(State, Package) of
         true ->
@@ -101,66 +126,64 @@ function_name([{<<"-">>, Package}|Packages_to_change], State, Repo, Graph, Size,
                     Package_name = maps:get(<<"name">>, Package),
                     Package_version = maps:get(<<"version">>, Package),
                     Instruction = <<"-", Package_name/binary, "=", Package_version/binary>>,
-                    Vertex = digraph:add_vertex(Graph, Instruction),
                     case Instruction_list of 
                         [] ->
                             function_name(
                                 Packages_to_change, 
                                 uninstall(State, Package), 
                                 Repo, 
-                                Graph,
+                                Relation_list,
                                 Size+1000000, 
                                 Instruction_list ++ [Instruction]
                             );
                         _ ->
                             Last_instruction = lists:last(Instruction_list),
-                            brutally_add_edge_to_digraph(Graph, Last_instruction, Vertex),
-                            % io:fwrite("Adding edge between: ~p, ~p", [Last_instruction, Vertex]),
-                            case digraph:get_cycle(Graph, Vertex) of
-                                false ->
+                            case proplists:append_values(Last_instruction, Relation_list) of
+                                [] ->
                                     function_name(
-                                        Packages_to_change, 
-                                        uninstall(State, Package), 
-                                        Repo, 
-                                        Graph,
-                                        Size+1000000, 
+                                        Packages_to_change,
+                                        install(State, Package),
+                                        Repo,
+                                        Relation_list ++ [{Last_instruction, Instruction}],
+                                        Size+1000000,
                                         Instruction_list ++ [Instruction]
                                     );
-                                _ ->
-                                    digraph:delete(Graph),
-                                    {error, cycle_found}
+                                Values ->
+                                    case lists:member(Instruction, Values) of
+                                        true ->
+                                            {error, cycle_found};
+                                        _ ->
+                                            function_name(
+                                                Packages_to_change,
+                                                install(State, Package),
+                                                Repo,
+                                                Relation_list ++ [{Last_instruction, Instruction}],
+                                                Size+1000000,
+                                                Instruction_list ++ [Instruction]
+                                            )
+                                    end
                             end
                     end;
                 Required_operations ->
                     % io:fwrite("New operations: ~p", [Required_operations]),
                     New_operations = Required_operations ++ [{<<"-">>, Package}|Packages_to_change],
-                    function_name(New_operations, State, Repo, Graph, Size, Instruction_list)
+                    function_name(New_operations, State, Repo, Relation_list, Size, Instruction_list)
             end;
         false ->
-            function_name(Packages_to_change, State, Repo, Graph, Size, Instruction_list)
+            function_name(Packages_to_change, State, Repo, Relation_list, Size, Instruction_list)
     end.
 
 compare_paths([], _, _, _, _, _, _, Best_path) ->
     Best_path;
-compare_paths([Commands|Rest], Packages_to_change, State, Repo, Graph, Size, Instruction_list, Best_path) ->
+compare_paths([Commands|Rest], Packages_to_change, State, Repo, Relation_list, Size, Instruction_list, Best_path) ->
     % io:fwrite("\nInstructions: ~p", [Commands]),
-    New_graph = digraph_utils:subgraph(Graph, digraph:vertices(Graph)),
-    % io:fwrite("\n Creating new graph: ~p, ~p", [digraph:vertices(New_graph), digraph:edges(New_graph)]),
-    case compare(New_path = function_name(Commands ++ Packages_to_change, State, Repo, New_graph, Size, Instruction_list), Best_path) of 
+    case compare(New_path = function_name(Commands ++ Packages_to_change, State, Repo, Relation_list, Size, Instruction_list), Best_path) of 
         true ->
             % io:fwrite("\nNew path wins: ~p, ~p", [New_path, Best_path]),
-            compare_paths(Rest, Packages_to_change, State, Repo, Graph, Size, Instruction_list, New_path);
+            compare_paths(Rest, Packages_to_change, State, Repo, Relation_list, Size, Instruction_list, New_path);
         false ->
             % io:fwrite("\nOld path wins: ~p, ~p", [New_path, Best_path]),
-            compare_paths(Rest, Packages_to_change, State, Repo, Graph, Size, Instruction_list, Best_path)
-    end.
-
-brutally_add_edge_to_digraph(Graph, Start, End) ->
-    case digraph:add_edge(Graph, Start, End) of
-        {error, {bad_edge, _}} ->
-            brutally_add_edge_to_digraph(Graph, Start, End);
-        _ ->
-            ok
+            compare_paths(Rest, Packages_to_change, State, Repo, Relation_list, Size, Instruction_list, Best_path)
     end.
 
 are_there_multiple_paths(List) ->
@@ -224,7 +247,7 @@ get_required_operations({Operation, Package}, State, Repo) ->
             %io:fwrite("\nConflicts: ~p", [Conflicts]),
             Cl = lists:map(fun(Elem) -> {<<"-">>, Elem} end, State_conflicts ++ Self_conflicts),
             Deps = get_missing_deps(State, Package),
-            % io:fwrite("\n Dependencies: ~p", [Deps]),            
+            % io:fwrite("\ Dependencies: ~p", [Deps]),            
             Dl = lists:map(fun(Elem) -> {<<"+">>, Elem} end, Deps),
             % io:fwrite("\n Dependency list: ~p", [Dl]),            
             convert_package_ref_to_json(Dl, Repo) ++ Cl;
@@ -382,65 +405,12 @@ get_all_package_less_than_equal_version({Pack_name, Ver}, [#{<<"version">> := V,
     get_all_package_less_than_equal_version({Pack_name, Ver}, Rest, Acc ++ [Package]);
 get_all_package_less_than_equal_version(Pack_ref, [_|Repo], Acc) ->
     get_all_package_less_than_equal_version(Pack_ref, Repo, Acc).
-
-% get_first_instance_of_package(_, []) ->
-%     {error, not_found};
-% get_first_instance_of_package(Pack_name, [#{<<"name">> := N} = Package|_]) when N == Pack_name ->
-%     Package;
-% get_first_instance_of_package(Pack_name, [_|Repo]) ->
-%     get_first_instance_of_package(Pack_name, Repo).
-
-% get_first_package_greater_than_equal_version(_, []) ->
-%     {error, not_found};
-% get_first_package_greater_than_equal_version({Pack_name, Ver}, [#{<<"version">> := V, <<"name">> := N} = Package|_]) when N == Pack_name andalso V >= Ver ->
-%     Package;
-% get_first_package_greater_than_equal_version(Pack_ref, [_|Repo]) ->
-%     get_first_package_greater_than_equal_version(Pack_ref, Repo).
-
-% get_first_package_less_than_equal_version(_, []) ->
-%     {error, not_found};
-% get_first_package_less_than_equal_version({Pack_name, Ver}, [#{<<"version">> := V, <<"name">> := N} = Package|_]) when N == Pack_name andalso V =< Ver ->
-%     Package;
-% get_first_package_less_than_equal_version(Pack_ref, [_|Repo]) ->
-%     get_first_package_less_than_equal_version(Pack_ref, Repo).
-
-% get_first_package_less_than_version(_, []) ->
-%     {error, not_found};
-% get_first_package_less_than_version({Pack_name, Ver}, [#{<<"version">> := V, <<"name">> := N} = Package|_]) when N == Pack_name andalso V < Ver ->
-%     Package;
-% get_first_package_less_than_version(Pack_ref, [_|Repo]) ->
-%     get_first_package_less_than_version(Pack_ref, Repo).
-
-% get_first_package_greater_than_version(_, []) ->
-%     {error, not_found};
-% get_first_package_greater_than_version({Pack_name, Ver}, [#{<<"version">> := V, <<"name">> := N} = Package|_]) when N == Pack_name andalso V > Ver ->
-%     Package;
-% get_first_package_greater_than_version(Pack_ref, [_|Repo]) ->
-%     get_first_package_greater_than_version(Pack_ref, Repo).
 % -------------------------------------------------------------------------------------------------------------------------------------------------------------------
 %
 % -------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 is_package_installed(State, Package) ->
     lists:member(Package, State).
-
-% can_package_be_installed(State, #{<<"version">> := Version, <<"name">> := Name} = Package) ->
-%     lists:all(fun(Elem) -> 
-%         case maps:get(<<"conflicts">>, Elem, none) of
-%             none -> true;
-%             {error, _} -> true;
-%             Value -> check_conflict_list({Name, Version}, Value)
-%         end
-%     end, State).
-
-% can_package_be_uninstalled(State, #{<<"version">> := Version, <<"name">> := Name} = Package) ->
-%     lists:all(fun(Elem) -> 
-%         case maps:get(<<"depends">>, Elem, none) of
-%             none -> true;
-%             {error, _} -> true;
-%             Value -> check_dependencies({Name, Version}, Value)
-%         end
-%     end, State).
 
 % Returns all packages that conflict with a package to be installed (Used to check if package can be installed)
 get_conflicting_packages(State, #{<<"version">> := Version, <<"name">> := Name}) ->
@@ -460,52 +430,6 @@ get_self_conflicts(State, #{<<"conflicts">> := Conflicts}) ->
     State);
 get_self_conflicts(_, _) ->
     [].
-
-% Returns all packages in current state that have a dependecny on the passed package (Used to check if package can be uninstalled)
-% get_dependent_packages(State, #{<<"version">> := Version, <<"name">> := Name}) ->
-%     lists:filtermap(fun(Elem) -> 
-%         case maps:get(<<"depends">>, Elem, none) of
-%             none -> false;
-%             {error, _} -> false;
-%             Value -> check_dependencies({Name, Version}, Value) 
-%         end
-%     end, State).
-
-% check_dependencies(_, []) ->
-%     false;
-% check_dependencies({Name, Version}, [Dependency|Xs]) ->
-%     io:fwrite("\nName,ver : ~p, Dep: ~p", [{Name, Version}, Dependency]),
-%     case binary:split(Dependency, [<<">=">>]) of
-%         [Name, Y] -> 
-%             Version >= Y;
-%         _ -> 
-%             case binary:split(Dependency, [<<"<=">>]) of
-%                 [Name, Y] ->
-%                     Version =< Y;
-%                 _ ->
-%                     case binary:split(Dependency, <<"=">>) of
-%                         [Name, Version] -> 
-%                             true;
-%                         _ ->
-%                             case binary:split(Dependency, <<">">>) of
-%                                 [Name, Y] -> 
-%                                     Version > Y;
-%                                 _ ->
-%                                     case binary:split(Dependency, <<"<">>) of
-%                                         [Name, Y] ->
-%                                             Version < Y;
-%                                         _ ->
-%                                             case Dependency of 
-%                                                 Name ->
-%                                                     false;
-%                                                 _ ->
-%                                                     check_dependencies({Name, Version}, Xs)
-%                                             end
-%                                     end        
-%                             end
-%                     end
-%             end
-%     end.
 
 check_conflict_list(_, []) ->
     false;
@@ -600,9 +524,6 @@ is_dependency_met(Dependency, [#{<<"name">> := Name, <<"version">> := Version}|S
                     end
             end
     end.
-
-% convert_json_to_state(Json_state) ->
-%     lists:map(fun(#{<<"name">> := Name, <<"version">> := Version}) -> <<Name/binary, "=", Version/binary>> end, Json_state).
 
 convert_state_to_json(State, Repo) ->
     lists:map(fun(Elem) -> 

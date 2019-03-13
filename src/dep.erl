@@ -22,7 +22,7 @@ main(Args) ->
             Paths = get_all_combinations_of_nested_lists(Consts),
             {_, _, Instruction_list} = compare_paths(Paths, [], State, Repo, Proplist, 0, [], none);
         false ->
-            {_, _, Instruction_list} = function_name(Consts, Repo, State, Proplist, 0 , [])
+            {_, _, Instruction_list} = function_name(Consts, State, Repo, Proplist, 0 , [])
     end,
     Output = lists:map(fun(E) -> binary_to_list(E) end, Instruction_list),
     io:fwrite("~p", [Output]).
@@ -142,7 +142,7 @@ function_name([{<<"-">>, Package}|Packages_to_change], State, Repo, Relation_lis
                                 [] ->
                                     function_name(
                                         Packages_to_change,
-                                        install(State, Package),
+                                        uninstall(State, Package),
                                         Repo,
                                         Relation_list ++ [{Last_instruction, Instruction}],
                                         Size+1000000,
@@ -155,7 +155,7 @@ function_name([{<<"-">>, Package}|Packages_to_change], State, Repo, Relation_lis
                                         _ ->
                                             function_name(
                                                 Packages_to_change,
-                                                install(State, Package),
+                                                uninstall(State, Package),
                                                 Repo,
                                                 Relation_list ++ [{Last_instruction, Instruction}],
                                                 Size+1000000,
